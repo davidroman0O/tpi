@@ -1,0 +1,16 @@
+.rust
+.backup
+bin/
+.DS_Store
+.idea/
+.vscode/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Ignore real hardware credentials
+testdata/config.json
