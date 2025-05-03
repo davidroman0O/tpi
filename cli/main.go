@@ -25,6 +25,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version information set by build flags
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // Set by linker at build time
 var debug string
 
@@ -50,6 +57,17 @@ func main() {
 	// Create a root command
 	rootCmd := commands.NewRootCommand()
 
+	// Add version command
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print the version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("TPI CLI %s\n", version)
+			fmt.Printf("Commit: %s\n", commit)
+			fmt.Printf("Built: %s\n", date)
+		},
+	})
+
 	// Override cobra's default behavior for help text
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// If this is the help command or -h/--help flag is present, don't validate host
@@ -59,6 +77,11 @@ func main() {
 
 		// Skip validation for auth commands
 		if cmd.Name() == "auth" || cmd.Parent() != nil && cmd.Parent().Name() == "auth" {
+			return nil
+		}
+
+		// Skip validation for version command
+		if cmd.Name() == "version" {
 			return nil
 		}
 
