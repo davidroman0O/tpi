@@ -50,22 +50,26 @@ jobs:
       - name: Set binary name
         id: binary-name
         run: |
-          BINARY_NAME="tpi"
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            BINARY_NAME="tpi.exe"
-          fi
-          echo "BINARY_NAME=$BINARY_NAME" >> $GITHUB_ENV
+          # Base name for the binary
+          BASE_NAME="tpi"
+          
+          # Add OS and architecture to the name
+          FULL_NAME="${BASE_NAME}-${{ matrix.os }}-${{ matrix.arch }}"
           
           # Add ARM version suffix if specified
-          ARM_SUFFIX=""
           if [ "${{ matrix.arm }}" != "" ]; then
-            ARM_SUFFIX="v${{ matrix.arm }}"
+            FULL_NAME="${FULL_NAME}v${{ matrix.arm }}"
           fi
-          echo "ARM_SUFFIX=$ARM_SUFFIX" >> $GITHUB_ENV
           
-          # Create artifact name
-          ARTIFACT_NAME="tpi-${{ matrix.os }}-${{ matrix.arch }}$ARM_SUFFIX"
-          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+          # Add .exe extension for Windows
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            FULL_NAME="${FULL_NAME}.exe"
+          fi
+          
+          echo "BINARY_NAME=${FULL_NAME}" >> $GITHUB_ENV
+          
+          # Create artifact name (same as binary name)
+          echo "ARTIFACT_NAME=${FULL_NAME}" >> $GITHUB_ENV
         shell: bash
       
       - name: Build CLI
@@ -75,7 +79,7 @@ jobs:
           GOARM: ${{ matrix.arm }}
         run: |
           # Debug information
-          echo "Building for $GOOS/$GOARCH"
+          echo "Building for $GOOS/$GOARCH as ${{ env.BINARY_NAME }}"
           
           # Move to CLI directory to build
           cd cli
