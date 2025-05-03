@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/davidroman0O/tpi"
+	tpi "github.com/davidroman0O/tpi/client"
 	"github.com/spf13/cobra"
 )
 

@@ -15,8 +15,7 @@
 package commands
 
 import (
-	"github.com/davidroman0O/tpi"
-	"github.com/davidroman0O/tpi/client"
+	tpi "github.com/davidroman0O/tpi/client"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +53,7 @@ modules simultaneously. For more information, visit https://turingpi.com/`,
 }
 
 // getClient creates a client from command flags
-func getClient(cmd *cobra.Command) (*client.Client, error) {
+func getClient(cmd *cobra.Command) (*tpi.Client, error) {
 	// Get flags
 	host, _ := cmd.Flags().GetString("host")
 	user, _ := cmd.Flags().GetString("user")
@@ -62,21 +61,21 @@ func getClient(cmd *cobra.Command) (*client.Client, error) {
 	apiVersionStr, _ := cmd.Flags().GetString("api-version")
 
 	// Create options
-	options := []client.Option{
-		client.WithHost(host),
+	options := []tpi.Option{
+		tpi.WithHost(host),
 	}
 
 	// Add API version if specified
-	apiVersion := client.ApiVersion(apiVersionStr)
+	apiVersion := tpi.ApiVersion(apiVersionStr)
 	if apiVersion != "" {
-		options = append(options, client.WithApiVersion(apiVersion))
+		options = append(options, tpi.WithApiVersion(apiVersion))
 	}
 
 	// Add credentials if provided
 	if user != "" || password != "" {
-		options = append(options, client.WithCredentials(user, password))
+		options = append(options, tpi.WithCredentials(user, password))
 	}
 
 	// Create client
-	return client.NewClient(options...)
+	return tpi.NewClient(options...)
 }
