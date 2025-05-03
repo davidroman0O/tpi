@@ -44,7 +44,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.19'
+          go-version: '1.23'
           check-latest: true
       
       - name: Set binary name
@@ -74,8 +74,17 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           GOARM: ${{ matrix.arm }}
         run: |
+          # Debug information
+          echo "Building for $GOOS/$GOARCH"
+          
+          # Move to CLI directory to build
           cd cli
-          go build -o ${{ env.BINARY_NAME }} -v -ldflags="-X 'main.version=$(git describe --tags --always)' -X 'main.commit=$(git rev-parse HEAD)' -X 'main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+          
+          # Debug information about available modules
+          go list -m all
+          
+          # Build the CLI
+          go build -o ${{ env.BINARY_NAME }} -v -ldflags="-X 'main.version=$(git describe --tags --always)' -X 'main.commit=$(git rev-parse HEAD)' -X 'main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" .
         shell: bash
       
       - name: Upload artifact
