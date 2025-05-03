@@ -56,7 +56,7 @@ func newEthCommand() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Println("Ethernet switch reset successfully")
+				fmt.Println("ok")
 			}
 		},
 	}

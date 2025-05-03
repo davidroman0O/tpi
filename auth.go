@@ -35,6 +35,11 @@ type Auth struct {
 	Token    string
 }
 
+// HasCredentials checks if the Auth struct has valid credentials
+func (a *Auth) HasCredentials() bool {
+	return a.Username != "" && a.Password != ""
+}
+
 // ForceAuthentication forces authentication and token caching
 func (c *Client) ForceAuthentication() (string, error) {
 	// Delete any existing token for this host

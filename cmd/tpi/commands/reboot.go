@@ -23,6 +23,11 @@ import (
 
 // newRebootCommand creates the reboot command
 func newRebootCommand() *cobra.Command {
+	var waitForBoot bool
+	var waitTimeout int
+	var skipConfirmation bool
+	var showDebug bool
+
 	cmd := &cobra.Command{
 		Use:   "reboot",
 		Short: "Reboot the BMC chip",
@@ -35,27 +40,74 @@ func newRebootCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			// Get confirmation
-			fmt.Println("WARNING: Rebooting the BMC will cause all nodes to lose power until the BMC boots up again.")
-			fmt.Print("Are you sure you want to continue? [y/N] ")
+			// Get confirmation unless skipped
+			if !skipConfirmation {
+				fmt.Println("WARNING: Rebooting the BMC will cause all nodes to lose power until the BMC boots up again.")
+				fmt.Print("Are you sure you want to continue? [y/N] ")
 
-			var response string
-			fmt.Scanln(&response)
+				var response string
+				fmt.Scanln(&response)
 
-			if response != "y" && response != "Y" {
-				fmt.Println("Reboot cancelled.")
-				return
+				if response != "y" && response != "Y" {
+					fmt.Println("Reboot cancelled.")
+					return
+				}
 			}
 
-			// Reboot
-			if err := client.Reboot(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			// If wait is requested, use RebootAndWait
+			if waitForBoot {
+				fmt.Println("BMC is rebooting...")
+				fmt.Printf("Waiting for BMC to come back online (timeout: %d seconds)\n", waitTimeout)
 
-			fmt.Println("BMC is rebooting...")
+				// Store original stdout if we need to hide debug output
+				var originalStdout *os.File
+				var null *os.File
+
+				if !showDebug {
+					// Temporarily redirect debug output to /dev/null
+					originalStdout = os.Stdout
+					var err error
+					null, err = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+					if err == nil {
+						os.Stdout = null
+						defer func() {
+							os.Stdout = originalStdout
+							null.Close()
+						}()
+					}
+				}
+
+				// Call the reboot method
+				err := client.RebootAndWait(waitTimeout)
+
+				// If we redirected debug output, restore stdout before printing progress
+				if !showDebug && originalStdout != nil {
+					os.Stdout = originalStdout
+				}
+
+				// Print final result
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+
+				fmt.Println("BMC is back online!")
+			} else {
+				// Just reboot without waiting
+				if err := client.Reboot(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("BMC is rebooting...")
+			}
 		},
 	}
+
+	// Add flags
+	cmd.Flags().BoolVarP(&waitForBoot, "wait", "w", false, "Wait for the BMC to come back online after reboot")
+	cmd.Flags().IntVarP(&waitTimeout, "timeout", "t", 120, "Timeout in seconds when waiting for BMC to come back online")
+	cmd.Flags().BoolVarP(&skipConfirmation, "yes", "y", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVarP(&showDebug, "debug", "d", false, "Show debug output during wait")
 
 	return cmd
 }

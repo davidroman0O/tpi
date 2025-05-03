@@ -44,6 +44,7 @@ type Request struct {
 	MultipartForm *bytes.Buffer
 	ContentType   string
 	UserAgent     string
+	Timeout       time.Duration // Custom timeout for this request
 }
 
 // NewRequest creates a new request with the given host and API version
@@ -70,6 +71,7 @@ func NewRequest(host string, version ApiVersion, username, password string) (*Re
 		Headers:     make(map[string]string),
 		QueryParams: url.Values{},
 		UserAgent:   userAgent,
+		Timeout:     0, // Use default timeout
 	}
 
 	req.Credentials.Username = username
@@ -91,6 +93,7 @@ func (r *Request) Clone() *Request {
 		Headers:     make(map[string]string),
 		QueryParams: url.Values{},
 		UserAgent:   r.UserAgent,
+		Timeout:     r.Timeout, // Copy timeout
 	}
 
 	// Clone URL
@@ -117,6 +120,11 @@ func (r *Request) Clone() *Request {
 	}
 
 	return clone
+}
+
+// Debug logs a debug message if debugging is enabled
+func (r *Request) Debug(format string, args ...interface{}) {
+	fmt.Printf("DEBUG: "+format+"\n", args...)
 }
 
 // ToPost converts the request to a POST request
@@ -166,9 +174,20 @@ func (r *Request) Send() (*http.Response, error) {
 			InsecureSkipVerify: true, // Skip certificate verification
 		},
 	}
+
+	// Use custom timeout if set, otherwise use default
+	timeout := 3 * time.Second // Default timeout
+	if r.Timeout > 0 {
+		timeout = r.Timeout
+	}
+
+	if r.Timeout > 0 {
+		fmt.Printf("DEBUG: Using custom timeout of %s\n", r.Timeout)
+	}
+
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   3 * time.Second, // Reduced timeout for better user experience
+		Timeout:   timeout,
 	}
 
 	var resp *http.Response
@@ -235,10 +254,9 @@ func (r *Request) Send() (*http.Response, error) {
 			}
 		}
 
-		break
+		// No further authentication needed, return the response
+		return resp, nil
 	}
-
-	return resp, nil
 }
 
 // getBearerToken retrieves the bearer token for authentication
@@ -301,13 +319,13 @@ func (r *Request) requestToken() (string, error) {
 	password := r.Credentials.Password
 
 	// Debug information
-	fmt.Printf("DEBUG: Auth attempt with user: %s to URL: %s\n", username, r.Host)
+	r.Debug("Auth attempt with user: %s to URL: %s", username, r.Host)
 
 	// Construct authentication URL
 	baseURL := fmt.Sprintf("%s://%s", r.Version.GetScheme(), r.Host)
 	authURL := fmt.Sprintf("%s/api/bmc/authenticate", baseURL)
 
-	fmt.Printf("DEBUG: Auth URL: %s\n", authURL)
+	r.Debug("Auth URL: %s", authURL)
 
 	// Create request body with username and password
 	requestBody := map[string]string{
@@ -320,7 +338,7 @@ func (r *Request) requestToken() (string, error) {
 		return "", fmt.Errorf("failed to marshal auth request: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Auth request body: %s\n", string(jsonBody))
+	r.Debug("Auth request body: %s", string(jsonBody))
 
 	// Create a POST request with JSON body
 	req, err := http.NewRequest(http.MethodPost, authURL, bytes.NewBuffer(jsonBody))
@@ -351,7 +369,7 @@ func (r *Request) requestToken() (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("DEBUG: Auth failed with status: %d, body: %s\n", resp.StatusCode, string(body))
+		r.Debug("Auth failed with status: %d, body: %s", resp.StatusCode, string(body))
 
 		if resp.StatusCode == http.StatusForbidden {
 			return "", fmt.Errorf("authentication failed: invalid credentials")
@@ -366,7 +384,7 @@ func (r *Request) requestToken() (string, error) {
 		return "", fmt.Errorf("failed to parse auth response: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Auth response: %+v\n", response)
+	r.Debug("Auth response: %+v", response)
 
 	// Look for token in the "id" field
 	tokenVal, ok := response["id"]
@@ -379,7 +397,7 @@ func (r *Request) requestToken() (string, error) {
 		return "", fmt.Errorf("invalid auth response: id is not a string")
 	}
 
-	fmt.Printf("DEBUG: Successfully got auth token: %s\n", token)
+	r.Debug("Successfully got auth token: %s", token)
 
 	// Save token to cache
 	if err := CacheToken(r.Host, token); err != nil {

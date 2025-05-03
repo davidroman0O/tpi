@@ -40,13 +40,13 @@ modules simultaneously. For more information, visit https://turingpi.com/`,
 	rootCmd.AddCommand(newPowerCommand())
 	rootCmd.AddCommand(newUsbCommand())
 	rootCmd.AddCommand(newInfoCommand())
+	rootCmd.AddCommand(newAboutCommand())
 	rootCmd.AddCommand(newRebootCommand())
 	rootCmd.AddCommand(newFirmwareCommand())
 	rootCmd.AddCommand(newFlashCommand())
 	rootCmd.AddCommand(newEthCommand())
 	rootCmd.AddCommand(newUartCommand())
 	rootCmd.AddCommand(newAdvancedCommand())
-	rootCmd.AddCommand(newCoolingCommand())
 	rootCmd.AddCommand(newAuthCommand())
 
 	return rootCmd

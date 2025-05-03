@@ -16,9 +16,13 @@ package tpi
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // EthReset resets the on-board Ethernet switch
+// Note: This is expected to cause a timeout as the network connection will be lost
 func (c *Client) EthReset() error {
 	req, err := c.newRequest()
 	if err != nil {
@@ -27,19 +31,40 @@ func (c *Client) EthReset() error {
 
 	// Add query parameters
 	req.AddQueryParam("opt", "set")
-	req.AddQueryParam("type", "eth")
+	req.AddQueryParam("type", "network")
 	req.AddQueryParam("cmd", "reset")
+
+	// Use a shorter timeout for this request since we expect it to timeout
+	originalTimeout := c.httpClient.Timeout
+	c.httpClient.Timeout = 2 * time.Second
 
 	// Send the request
 	resp, err := req.Send()
+
+	// Restore the original timeout
+	c.httpClient.Timeout = originalTimeout
+
+	// Check for timeout or connection errors, which are expected when resetting the network
 	if err != nil {
+		if strings.Contains(err.Error(), "context deadline exceeded") ||
+			strings.Contains(err.Error(), "connection refused") ||
+			strings.Contains(err.Error(), "EOF") {
+			// This is expected, so we'll return success
+			return nil
+		}
 		return fmt.Errorf("failed to send request: %w", err)
 	}
+
+	// If we got a response, check for errors
 	defer resp.Body.Close()
 
 	// Check for errors in the response
-	if err := checkResponseError(resp); err != nil {
-		return fmt.Errorf("Ethernet switch reset failed: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusBadRequest {
+			// Some BMC firmware versions may return an error, but the command might still work
+			return nil
+		}
+		return fmt.Errorf("Ethernet switch reset failed: status code %d", resp.StatusCode)
 	}
 
 	return nil

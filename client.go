@@ -21,7 +21,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
+)
+
+const (
+	// DefaultTimeout is the default timeout for HTTP requests
+	DefaultTimeout = 10 * time.Second
+
+	// DefaultRetries is the default number of retries for HTTP requests
+	DefaultRetries = 3
+
+	// DefaultRetryWait is the default wait time between retries
+	DefaultRetryWait = 1 * time.Second
 )
 
 // Client is the main interface for interacting with a Turing Pi board
@@ -30,6 +42,7 @@ type Client struct {
 	ApiVersion ApiVersion
 	httpClient *http.Client
 	auth       *Auth
+	mu         sync.Mutex
 }
 
 // NewClient creates a new Turing Pi client with the provided options
@@ -93,9 +106,20 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
-// newRequest creates a new Request object for this client
+// newRequest creates a new HTTP request
 func (c *Client) newRequest() (*Request, error) {
-	return NewRequest(c.Host, c.ApiVersion, c.auth.Username, c.auth.Password)
+	// Ensure we have valid credentials
+	if c.auth == nil || !c.auth.HasCredentials() {
+		return nil, fmt.Errorf("no credentials provided")
+	}
+
+	// Create a new request
+	req, err := NewRequest(c.Host, c.ApiVersion, c.auth.Username, c.auth.Password)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
 }
 
 // checkResponseError checks if a response contains an error
@@ -166,12 +190,42 @@ func (c *Client) Reboot() error {
 	req.AddQueryParam("opt", "set")
 	req.AddQueryParam("type", "reboot")
 
-	// Send the request
-	resp, err := req.Send()
+	// Send the request with auto-retry on auth failures
+	var resp *http.Response
+
+	// First try with any cached token
+	resp, err = req.Send()
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// If we get unauthorized, try to force authentication and retry
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Delete the cached token which is causing the 401
+		DeleteCachedToken(c.Host)
+
+		// Force re-authentication
+		req, err = c.newRequest()
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.AddQueryParam("opt", "set")
+		req.AddQueryParam("type", "reboot")
+
+		// Force authentication before sending
+		if _, authErr := req.ForceAuthentication(); authErr != nil {
+			return fmt.Errorf("authentication failed: %w", authErr)
+		}
+
+		// Retry the request with the new token
+		resp, err = req.Send()
+		if err != nil {
+			return fmt.Errorf("failed to send request after re-authentication: %w", err)
+		}
+		defer resp.Body.Close()
+	}
 
 	// Check for errors in the response
 	if err := checkResponseError(resp); err != nil {
@@ -179,4 +233,103 @@ func (c *Client) Reboot() error {
 	}
 
 	return nil
+}
+
+// RebootAndWait reboots the BMC and waits for it to come back online.
+// It uses exponential backoff when checking the BMC status.
+// The timeout is in seconds.
+func (c *Client) RebootAndWait(timeout int) error {
+	// First reboot the BMC
+	if err := c.Reboot(); err != nil {
+		return err
+	}
+
+	// Wait a bit before starting to check
+	time.Sleep(5 * time.Second)
+
+	// Start time
+	startTime := time.Now()
+	timeoutDuration := time.Duration(timeout) * time.Second
+
+	// Retry interval starts at 1 second, will gradually increase
+	retryInterval := time.Second
+
+	// Setup progress indicator
+	progressChar := "."
+	attempts := 0
+	lastProgressUpdate := time.Now()
+	progressInterval := 1 * time.Second
+
+	for {
+		// Check if we've exceeded the timeout
+		if time.Since(startTime) > timeoutDuration {
+			return fmt.Errorf("timeout reached: BMC did not respond within %d seconds", timeout)
+		}
+
+		// Print progress indicator at regular intervals
+		if time.Since(lastProgressUpdate) >= progressInterval {
+			fmt.Print(progressChar)
+			lastProgressUpdate = time.Now()
+		}
+
+		// Try to connect to the BMC
+		_, err := c.Info()
+		if err == nil {
+			return nil // BMC is back online
+		}
+
+		// Exponential backoff with a maximum of 5 seconds
+		retryInterval = time.Duration(float64(retryInterval) * 1.5)
+		if retryInterval > 5*time.Second {
+			retryInterval = 5 * time.Second
+		}
+
+		attempts++
+		time.Sleep(retryInterval)
+	}
+}
+
+// About returns detailed information about the BMC daemon
+func (c *Client) About() (map[string]string, error) {
+	req, err := c.newRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add query parameters for the about endpoint
+	req.AddQueryParam("opt", "get")
+	req.AddQueryParam("type", "about")
+
+	// Send the request
+	resp, err := req.Send()
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Handle the specific response format for the about endpoint
+	var responseData struct {
+		Response []struct {
+			Result map[string]string `json:"result"`
+		} `json:"response"`
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Parse the JSON
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Check if we have valid data
+	if len(responseData.Response) == 0 || responseData.Response[0].Result == nil {
+		return nil, fmt.Errorf("invalid response format")
+	}
+
+	// Return the result map
+	return responseData.Response[0].Result, nil
 }
