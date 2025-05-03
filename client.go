@@ -108,8 +108,18 @@ func WithTimeout(timeout time.Duration) Option {
 
 // newRequest creates a new HTTP request
 func (c *Client) newRequest() (*Request, error) {
-	// Ensure we have valid credentials
-	if c.auth == nil || !c.auth.HasCredentials() {
+	// Check if we have a cached token for this host
+	hasCachedToken := false
+	if c.Host != "" {
+		_, err := GetCachedToken(c.Host)
+		if err == nil {
+			hasCachedToken = true
+			Debug("Found cached token for host %s", c.Host)
+		}
+	}
+
+	// Only require explicit credentials if we don't have a cached token
+	if !hasCachedToken && (c.auth == nil || !c.auth.HasCredentials()) {
 		return nil, fmt.Errorf("no credentials provided")
 	}
 

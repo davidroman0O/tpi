@@ -28,10 +28,23 @@ import (
 // Set by linker at build time
 var debug string
 
+// enableDebugging is a package-level variable to control debug output
+var enableDebugging bool
+
 func main() {
 	// Check if we're running in debug mode
-	if debug == "true" {
+	if debug == "true" || os.Getenv("TPI_DEBUG") == "true" {
+		enableDebugging = true
 		fmt.Println("Running in debug mode")
+	}
+
+	// Export the debug flag to the request package
+	// Ensure TPI_DEBUG is set properly even in go run
+	if os.Getenv("TPI_DEBUG") == "true" {
+		os.Setenv("TPI_DEBUG", "true")
+		debug = "true"
+	} else {
+		os.Setenv("TPI_DEBUG", debug)
 	}
 
 	// Create a root command
@@ -54,7 +67,7 @@ func main() {
 
 		// For all other commands, validate the host
 		if host == "" {
-			return fmt.Errorf("No host specified. Please provide the Turing Pi hostname with --host.\nExample: tpi --host=192.168.1.100 power status\n\nIf running on a Turing Pi, the host should be detected automatically.")
+			return fmt.Errorf("No host specified. Please provide the Turing Pi hostname with --host.\nExample: tpi --host=192.168.1.91 power status\n\nIf running on a Turing Pi, the host should be detected automatically.")
 		}
 
 		return nil

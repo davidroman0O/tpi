@@ -16,6 +16,7 @@ package tpi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +28,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -109,29 +112,56 @@ func (c *Client) FlashNode(node int, options *FlashOptions) error {
 		req.AddQueryParam("skip_crc", "1")
 	}
 
-	// Send the request to get the handle
-	resp, err := req.Send()
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+	// Send the request to get the handle with retry logic
+	var handle float64
+	for attempts := 0; attempts < 3; attempts++ {
+		resp, err := req.Send()
+		if err != nil {
+			if attempts < 2 {
+				fmt.Printf("Error initializing flash operation: %v. Retrying in 3 seconds...\n", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to send request after retries: %w", err)
+		}
+		defer resp.Body.Close()
 
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to initiate flash operation: %s: %s", resp.Status, string(body))
-	}
+		// Check response status
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			if attempts < 2 {
+				fmt.Printf("Error initializing flash operation: %s. Retrying in 3 seconds...\n", resp.Status)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to initiate flash operation: %s: %s", resp.Status, string(body))
+		}
 
-	// Parse the response to get the handle
-	var respData map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
-	}
+		// Parse the response to get the handle
+		var respData map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+			if attempts < 2 {
+				fmt.Printf("Error parsing response: %v. Retrying in 3 seconds...\n", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
 
-	// Extract the handle directly from the top level
-	handle, ok := respData["handle"].(float64)
-	if !ok {
-		return fmt.Errorf("invalid response: missing handle")
+		// Extract the handle directly from the top level
+		var ok bool
+		handle, ok = respData["handle"].(float64)
+		if !ok {
+			if attempts < 2 {
+				fmt.Printf("Error extracting handle from response. Retrying in 3 seconds...\n")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("invalid response: missing handle")
+		}
+
+		// If we get here, we have a valid handle
+		break
 	}
 
 	fmt.Printf("Started transfer of %.2f GiB...\n", float64(fileSize)/(1024*1024*1024))
@@ -188,19 +218,44 @@ func (c *Client) FlashNode(node int, options *FlashOptions) error {
 	// Allow up to 60 minutes for the upload
 	uploadReq.Timeout = 60 * time.Minute
 
-	// Send the upload request
-	uploadResp, err := uploadReq.Send()
-	if err != nil {
-		return fmt.Errorf("failed to upload file: %w", err)
+	// Send the upload request with retry logic
+	for attempts := 0; attempts < 3; attempts++ {
+		uploadResp, err := uploadReq.Send()
+		if err != nil {
+			if attempts < 2 {
+				fmt.Printf("Error uploading file: %v. Retrying in 5 seconds...\n", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to upload file after retries: %w", err)
+		}
+		defer uploadResp.Body.Close()
+
+		// Check response status
+		if uploadResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(uploadResp.Body)
+			if attempts < 2 {
+				fmt.Printf("Error uploading file: %s. Retrying in 5 seconds...\n", uploadResp.Status)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to upload file: %s: %s", uploadResp.Status, string(body))
+		}
+
+		// If we get here, the upload was successful
+		break
 	}
-	defer uploadResp.Body.Close()
 
 	// Step 3: Monitor the flashing progress
-	return c.watchFlashingProgress(int(handle), fileSize)
+	// Create a context with timeout for the entire operation
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Minute)
+	defer cancel()
+
+	return c.watchFlashingProgress(ctx, int(handle), fileSize)
 }
 
-// watchFlashingProgress watches the progress of a flashing operation
-func (c *Client) watchFlashingProgress(handle int, fileSize int64) error {
+// watchFlashingProgress watches the progress of a flashing operation with improved error handling
+func (c *Client) watchFlashingProgress(ctx context.Context, handle int, fileSize int64) error {
 	// Initial delay to allow the flashing to begin
 	time.Sleep(3 * time.Second)
 
@@ -214,115 +269,209 @@ func (c *Client) watchFlashingProgress(handle int, fileSize int64) error {
 	progressReq.AddQueryParam("opt", "get")
 	progressReq.AddQueryParam("type", "flash")
 
-	// Set a longer timeout for progress monitoring
-	progressReq.Timeout = 30 * time.Second
+	// Use a much longer timeout for progress checking as the BMC can be slow to respond
+	progressReq.Timeout = 45 * time.Second
 
-	var verifying bool
-	startTime := time.Now()
+	// Variables for tracking progress
+	var (
+		verifying      bool
+		startTime      = time.Now()
+		consecutiveErr int
+		maxRetries     = 20 // Increase max retries
+		lastBytes      int64
+		lastUpdateTime = startTime
+		speedWindow    = []float64{}
+		lastErrorMsg   string
+	)
+
+	// Use a ticker for consistent polling
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	// Use a mutex to protect shared data during updates
+	var mu sync.Mutex
 
 	for {
-		// Send the request
-		resp, err := progressReq.Send()
-		if err != nil {
-			fmt.Printf("\nError checking progress: %v. Retrying in 5 seconds...\n", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Set a timeout just for this request
+			reqCtx, reqCancel := context.WithTimeout(ctx, 45*time.Second)
+			progressReq.SetContext(reqCtx)
 
-		// Parse the response
-		var respData map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+			// Send the request
+			resp, err := progressReq.Send()
+			reqCancel() // Clean up the context immediately after the request
+
+			if err != nil {
+				consecutiveErr++
+
+				// Only print error message if it's different from the last one
+				// or if it's been a while since we printed an error
+				errorMsg := err.Error()
+				if errorMsg != lastErrorMsg || consecutiveErr%5 == 1 {
+					if strings.Contains(errorMsg, "context deadline exceeded") {
+						fmt.Printf("\nWaiting for BMC response... (%d/%d)", consecutiveErr, maxRetries)
+					} else {
+						fmt.Printf("\nError checking progress: %v. Retrying... (%d/%d)",
+							err, consecutiveErr, maxRetries)
+					}
+					lastErrorMsg = errorMsg
+				}
+
+				if consecutiveErr >= maxRetries {
+					return fmt.Errorf("too many consecutive errors (%d): %w", consecutiveErr, err)
+				}
+
+				// Use exponential backoff for retries but cap at 10 seconds
+				backoff := time.Duration(consecutiveErr/2) * time.Second
+				if backoff > 10*time.Second {
+					backoff = 10 * time.Second
+				}
+
+				time.Sleep(backoff)
+				continue
+			}
+
+			// Reset consecutive errors on success
+			if consecutiveErr > 0 {
+				fmt.Printf("\nResumed progress monitoring after %d errors", consecutiveErr)
+				consecutiveErr = 0
+				lastErrorMsg = ""
+			}
+
+			// Parse the response
+			var respData map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+				resp.Body.Close()
+				fmt.Printf("\nError parsing progress response: %v. Retrying...", err)
+				continue
+			}
 			resp.Body.Close()
-			return fmt.Errorf("failed to parse progress response: %w", err)
-		}
-		resp.Body.Close()
 
-		// Check if the transfer is still in progress
-		if transferring, ok := respData["Transferring"].(map[string]interface{}); ok {
-			// Extract the transfer ID
-			var id float64
-			if idFloat, ok := transferring["id"].(float64); ok {
-				id = idFloat
-			} else if idStr, ok := transferring["id"].(string); ok {
-				idInt, err := strconv.ParseInt(idStr, 10, 64)
-				if err != nil {
-					return fmt.Errorf("failed to parse transfer ID: %w", err)
+			// Check if the transfer is still in progress
+			if transferring, ok := respData["Transferring"].(map[string]interface{}); ok {
+				// Extract the transfer ID
+				var id float64
+				if idFloat, ok := transferring["id"].(float64); ok {
+					id = idFloat
+				} else if idStr, ok := transferring["id"].(string); ok {
+					idInt, err := strconv.ParseInt(idStr, 10, 64)
+					if err != nil {
+						continue
+					}
+					id = float64(idInt)
+				} else {
+					continue
 				}
-				id = float64(idInt)
-			} else {
-				return fmt.Errorf("unexpected transfer ID type")
-			}
 
-			// Verify the ID matches our handle
-			if int(id) != handle {
-				return fmt.Errorf("invalid transfer handle: expected %d, got %d", handle, int(id))
-			}
-
-			// Extract bytes written
-			var bytesWritten int64
-			if bytesFloat, ok := transferring["bytes_written"].(float64); ok {
-				bytesWritten = int64(bytesFloat)
-			} else if bytesStr, ok := transferring["bytes_written"].(string); ok {
-				bytesWritten, err = strconv.ParseInt(bytesStr, 10, 64)
-				if err != nil {
-					return fmt.Errorf("failed to parse bytes written: %w", err)
+				// Verify the ID matches our handle - just log and continue if not
+				if int(id) != handle {
+					continue
 				}
-			} else {
-				return fmt.Errorf("unexpected bytes_written type")
-			}
 
-			// Calculate progress
-			if bytesWritten >= fileSize {
-				if !verifying {
-					fmt.Println("\nVerifying checksum...")
-					verifying = true
+				// Extract bytes written
+				var bytesWritten int64
+				if bytesFloat, ok := transferring["bytes_written"].(float64); ok {
+					bytesWritten = int64(bytesFloat)
+				} else if bytesStr, ok := transferring["bytes_written"].(string); ok {
+					bytesWritten, err = strconv.ParseInt(bytesStr, 10, 64)
+					if err != nil {
+						continue
+					}
+				} else {
+					continue
 				}
-			} else {
-				progress := float64(bytesWritten) / float64(fileSize) * 100
-				elapsed := time.Since(startTime)
-				var eta time.Duration
-				if bytesWritten > 0 {
+
+				// Protect updates with mutex
+				mu.Lock()
+
+				// Calculate progress
+				if bytesWritten >= fileSize {
+					if !verifying {
+						fmt.Println("\nVerifying checksum...")
+						verifying = true
+					}
+				} else {
+					progress := float64(bytesWritten) / float64(fileSize) * 100
+
+					// Calculate speed
+					now := time.Now()
+					elapsed := now.Sub(lastUpdateTime)
+
+					var speed float64
+					if elapsed.Seconds() > 0 && lastBytes > 0 {
+						// Calculate current speed
+						currentSpeed := float64(bytesWritten-lastBytes) / elapsed.Seconds()
+
+						// Add to speed window (up to 5 samples)
+						speedWindow = append(speedWindow, currentSpeed)
+						if len(speedWindow) > 5 {
+							speedWindow = speedWindow[1:]
+						}
+
+						// Calculate average speed from window
+						var totalSpeed float64
+						for _, s := range speedWindow {
+							totalSpeed += s
+						}
+						speed = totalSpeed / float64(len(speedWindow))
+					}
+
+					// Update tracking variables
+					lastBytes = bytesWritten
+					lastUpdateTime = now
+
 					// Calculate ETA
-					bytesPerSecond := float64(bytesWritten) / elapsed.Seconds()
-					if bytesPerSecond > 0 {
-						etaSeconds := float64(fileSize-bytesWritten) / bytesPerSecond
+					totalElapsed := time.Since(startTime)
+					var eta time.Duration
+
+					if speed > 0 {
+						remainingBytes := float64(fileSize - bytesWritten)
+						etaSeconds := remainingBytes / speed
 						eta = time.Duration(etaSeconds) * time.Second
 					}
+
+					etaStr := "calculating..."
+					if eta > 0 {
+						etaStr = eta.Round(time.Second).String()
+					}
+
+					speedStr := "calculating..."
+					if speed > 0 {
+						speedStr = formatBytes(int64(speed)) + "/s"
+					}
+
+					// Use a carriage return to overwrite the current line
+					fmt.Printf("\rProgress: %.1f%% (%s / %s) • Speed: %s • Elapsed: %s • ETA: %s    ",
+						progress,
+						formatBytes(bytesWritten),
+						formatBytes(fileSize),
+						speedStr,
+						totalElapsed.Round(time.Second),
+						etaStr)
 				}
 
-				etaStr := "calculating..."
-				if eta > 0 {
-					etaStr = eta.Round(time.Second).String()
-				}
-
-				fmt.Printf("\rProgress: %.1f%% (%s / %s) - ETA: %s",
-					progress,
-					formatBytes(bytesWritten),
-					formatBytes(fileSize),
-					etaStr)
+				mu.Unlock()
+				continue
 			}
 
-			time.Sleep(1 * time.Second)
-			continue
-		}
+			// Check if done
+			if _, ok := respData["Done"]; ok {
+				fmt.Println("\nFlashing completed successfully")
+				return nil
+			}
 
-		// Check if done
-		if _, ok := respData["Done"]; ok {
-			fmt.Println("\nFlashing completed successfully")
-			break
-		}
+			// Check for errors
+			if errMap, ok := respData["Error"].(map[string]interface{}); ok {
+				return fmt.Errorf("error occurred during flashing: %v", errMap)
+			}
 
-		// Check for errors
-		if errMap, ok := respData["Error"].(map[string]interface{}); ok {
-			return fmt.Errorf("error occurred during flashing: %v", errMap)
+			// If we don't recognize the response, log and continue
+			fmt.Printf("\rWaiting for flashing to complete...")
 		}
-
-		// If we don't recognize the response, wait and retry
-		fmt.Printf("\rWaiting for flashing to complete...")
-		time.Sleep(2 * time.Second)
 	}
-
-	return nil
 }
 
 // FlashNodeLocal flashes a node with an image file that is accessible from the BMC
@@ -347,19 +496,35 @@ func (c *Client) FlashNodeLocal(node int, imagePath string) error {
 	req.AddQueryParam("node", strconv.Itoa(node-1)) // BMC uses 0-based indexing
 	req.AddQueryParam("path", imagePath)
 
-	// Send the request
-	resp, err := req.Send()
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+	// Send the request with retry logic
+	for attempts := 0; attempts < 3; attempts++ {
+		resp, err := req.Send()
+		if err != nil {
+			if attempts < 2 {
+				fmt.Printf("Error sending request: %v. Retrying in 3 seconds...\n", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("failed to send request after retries: %w", err)
+		}
+		defer resp.Body.Close()
 
-	// Check for errors in the response
-	if err := checkResponseError(resp); err != nil {
-		return fmt.Errorf("flash operation failed: %w", err)
+		// Check for errors in the response
+		if err := checkResponseError(resp); err != nil {
+			if attempts < 2 {
+				fmt.Printf("Error in response: %v. Retrying in 3 seconds...\n", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return fmt.Errorf("flash operation failed: %w", err)
+		}
+
+		// If we get here, the operation was successful
+		fmt.Println("Flash operation completed successfully")
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("failed to complete flash operation after maximum retries")
 }
 
 // formatBytes formats bytes into human-readable format
@@ -374,4 +539,9 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// SetContext adds a context to an existing request
+func (r *Request) SetContext(ctx context.Context) {
+	r.Context = ctx
 }

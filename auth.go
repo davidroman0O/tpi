@@ -44,7 +44,7 @@ func (a *Auth) HasCredentials() bool {
 func (c *Client) ForceAuthentication() (string, error) {
 	// Delete any existing token for this host
 	if err := DeleteCachedToken(c.Host); err != nil {
-		fmt.Printf("DEBUG: Failed to delete existing token: %v\n", err)
+		Debug("Failed to delete existing token: %v", err)
 	}
 
 	// Get a new token
@@ -55,7 +55,7 @@ func (c *Client) ForceAuthentication() (string, error) {
 
 	// Cache the token
 	if err := CacheToken(c.Host, token); err != nil {
-		fmt.Printf("DEBUG: Failed to cache token: %v\n", err)
+		Debug("Failed to cache token: %v", err)
 	}
 
 	return token, nil
@@ -68,13 +68,13 @@ func (c *Client) requestToken() (string, error) {
 	password := c.auth.Password
 
 	// Debug information
-	fmt.Printf("DEBUG: Auth attempt with user: %s to URL: %s\n", username, c.Host)
+	Debug("Auth attempt with user: %s to URL: %s", username, c.Host)
 
 	// Construct authentication URL
 	baseURL := fmt.Sprintf("%s://%s", c.ApiVersion.GetScheme(), c.Host)
 	authURL := fmt.Sprintf("%s/api/bmc/authenticate", baseURL)
 
-	fmt.Printf("DEBUG: Auth URL: %s\n", authURL)
+	Debug("Auth URL: %s", authURL)
 
 	// Create request body with username and password
 	requestBody := map[string]string{
@@ -87,7 +87,7 @@ func (c *Client) requestToken() (string, error) {
 		return "", fmt.Errorf("failed to marshal auth request: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Auth request body: %s\n", string(jsonBody))
+	Debug("Auth request body: %s", string(jsonBody))
 
 	// Create a POST request with JSON body
 	req, err := http.NewRequest(http.MethodPost, authURL, bytes.NewBuffer(jsonBody))
@@ -125,7 +125,7 @@ func (c *Client) requestToken() (string, error) {
 	// Handle non-200 response
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("DEBUG: Auth failed with status: %d, body: %s\n", resp.StatusCode, string(body))
+		Debug("Auth failed with status: %d, body: %s", resp.StatusCode, string(body))
 
 		if resp.StatusCode == http.StatusForbidden {
 			return "", fmt.Errorf("authentication failed: invalid credentials")
@@ -140,7 +140,7 @@ func (c *Client) requestToken() (string, error) {
 		return "", fmt.Errorf("failed to parse auth response: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Auth response: %+v\n", response)
+	Debug("Auth response: %+v", response)
 
 	// Look for token in the "id" field
 	tokenVal, ok := response["id"]
@@ -153,7 +153,7 @@ func (c *Client) requestToken() (string, error) {
 		return "", fmt.Errorf("invalid auth response: id is not a string")
 	}
 
-	fmt.Printf("DEBUG: Successfully got auth token: %s\n", token)
+	Debug("Successfully got auth token: %s", token)
 
 	// Save token to cache
 	if err := CacheToken(c.Host, token); err != nil {

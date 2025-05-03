@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/davidroman0O/tpi"
 	"github.com/spf13/cobra"
 )
@@ -54,18 +55,27 @@ func newAuthLoginCommand() *cobra.Command {
   tpi auth login --host=192.168.1.91 --user=root --password=turing
   
   # Login with just a host (will try default credentials)
-  tpi auth login --host=192.168.1.91`,
+  tpi auth login --host=192.168.1.91
+  
+  # Interactive login (no flags required)
+  tpi auth login`,
 		Run: func(cmd *cobra.Command, args []string) {
-			// Ensure host is specified
+			// Get flags
 			host, _ := cmd.Flags().GetString("host")
+			user, _ := cmd.Flags().GetString("user")
+			password, _ := cmd.Flags().GetString("password")
+
+			// If host isn't specified, use interactive mode
+			if host == "" && password == "" && user == "" {
+				runInteractiveLogin(cmd)
+				return
+			}
+
+			// Ensure host is specified
 			if host == "" {
 				fmt.Fprintln(os.Stderr, "Error: host is required")
 				os.Exit(1)
 			}
-
-			// Get user and password
-			user, _ := cmd.Flags().GetString("user")
-			password, _ := cmd.Flags().GetString("password")
 
 			// Try direct HTTP approach first - this is most reliable
 			if user != "" && password != "" {
@@ -200,6 +210,66 @@ func newAuthLoginCommand() *cobra.Command {
 	return cmd
 }
 
+// runInteractiveLogin runs an interactive login using the huh library
+func runInteractiveLogin(cmd *cobra.Command) {
+	var host, username, password string
+
+	fmt.Println("🔐 Turing Pi Authentication")
+
+	// Create interactive form with huh
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("BMC Hostname/IP").
+				Placeholder("192.168.1.91").
+				Value(&host).
+				Validate(func(s string) error {
+					if s == "" {
+						return fmt.Errorf("hostname or IP is required")
+					}
+					return nil
+				}),
+		),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Username").
+				Placeholder("root").
+				Value(&username),
+			huh.NewInput().
+				Title("Password").
+				Password(true).
+				Value(&password),
+		),
+	)
+
+	// Run the form
+	err := form.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Set the values back to the command's flags
+	cmd.Flags().Set("host", host)
+	cmd.Flags().Set("user", username)
+	cmd.Flags().Set("password", password)
+
+	// Create a client
+	client, err := getClient(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Log in
+	if err := client.Login(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Successfully authenticated to %s and cached token\n", host)
+}
+
 // newAuthLogoutCommand creates the logout subcommand
 func newAuthLogoutCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -220,14 +290,14 @@ func newAuthLogoutCommand() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Println("Successfully logged out - all token caches cleared")
+				fmt.Println("✅ Successfully logged out - all token caches cleared")
 			} else {
 				// Clear token for specific host
 				if err := tpi.DeleteCachedToken(host); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Printf("Successfully logged out from %s - token cache cleared\n", host)
+				fmt.Printf("✅ Successfully logged out from %s - token cache cleared\n", host)
 			}
 		},
 	}
@@ -258,20 +328,20 @@ func newAuthStatusCommand() *cobra.Command {
 				}
 
 				if len(hosts) == 0 {
-					fmt.Println("No cached authentication tokens found")
+					fmt.Println("🔒 No cached authentication tokens found")
 				} else {
-					fmt.Println("Cached authentication tokens found for:")
+					fmt.Println("🔓 Cached authentication tokens found for:")
 					for _, h := range hosts {
-						fmt.Printf("- %s\n", h)
+						fmt.Printf("  • %s\n", h)
 					}
 				}
 			} else {
 				// Check if token exists for specific host
 				_, err := tpi.GetCachedToken(host)
 				if err != nil {
-					fmt.Printf("Not authenticated to %s (no cached token)\n", host)
+					fmt.Printf("🔒 Not authenticated to %s (no cached token)\n", host)
 				} else {
-					fmt.Printf("Authenticated to %s (token is cached)\n", host)
+					fmt.Printf("🔓 Authenticated to %s (token is cached)\n", host)
 				}
 			}
 		},

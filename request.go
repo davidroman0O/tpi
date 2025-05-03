@@ -16,6 +16,7 @@ package tpi
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,14 @@ import (
 	"runtime"
 	"time"
 )
+
+// Debug logs a debug message if debugging is enabled
+// Only prints when TPI_DEBUG env var is set to "true"
+func Debug(format string, args ...interface{}) {
+	if os.Getenv("TPI_DEBUG") == "true" {
+		fmt.Printf("DEBUG: "+format+"\n", args...)
+	}
+}
 
 // Request represents an HTTP request for the Turing Pi API
 type Request struct {
@@ -44,7 +53,8 @@ type Request struct {
 	MultipartForm *bytes.Buffer
 	ContentType   string
 	UserAgent     string
-	Timeout       time.Duration // Custom timeout for this request
+	Timeout       time.Duration   // Custom timeout for this request
+	Context       context.Context // Context for the request
 }
 
 // NewRequest creates a new request with the given host and API version
@@ -94,6 +104,7 @@ func (r *Request) Clone() *Request {
 		QueryParams: url.Values{},
 		UserAgent:   r.UserAgent,
 		Timeout:     r.Timeout, // Copy timeout
+		Context:     r.Context, // Copy context
 	}
 
 	// Clone URL
@@ -124,7 +135,8 @@ func (r *Request) Clone() *Request {
 
 // Debug logs a debug message if debugging is enabled
 func (r *Request) Debug(format string, args ...interface{}) {
-	fmt.Printf("DEBUG: "+format+"\n", args...)
+	// Use the package-level Debug function
+	Debug(format, args...)
 }
 
 // ToPost converts the request to a POST request
@@ -161,12 +173,12 @@ func (r *Request) Send() (*http.Response, error) {
 	if tokenErr == nil {
 		// We already have a token, use it right away
 		authenticated = true
-		fmt.Printf("DEBUG: Found cached token for %s, using it for first request\n", r.Host)
+		r.Debug("Found cached token for %s, using it for first request", r.Host)
 	}
 
-	fmt.Printf("DEBUG: Send request to URL: %s\n", r.GetURL())
-	fmt.Printf("DEBUG: Request headers: %v\n", r.Headers)
-	fmt.Printf("DEBUG: Request method: %s\n", r.Method)
+	r.Debug("Send request to URL: %s", r.GetURL())
+	r.Debug("Request headers: %v", r.Headers)
+	r.Debug("Request method: %s", r.Method)
 
 	// Create a client that ignores SSL certificate errors
 	tr := &http.Transport{
@@ -182,7 +194,7 @@ func (r *Request) Send() (*http.Response, error) {
 	}
 
 	if r.Timeout > 0 {
-		fmt.Printf("DEBUG: Using custom timeout of %s\n", r.Timeout)
+		r.Debug("Using custom timeout of %s", r.Timeout)
 	}
 
 	client := &http.Client{
@@ -199,7 +211,17 @@ func (r *Request) Send() (*http.Response, error) {
 			reqBody = r.MultipartForm
 		}
 
-		req, err := http.NewRequest(r.Method, r.GetURL(), reqBody)
+		var req *http.Request
+		var err error
+
+		// Use context if available
+		if r.Context != nil {
+			req, err = http.NewRequestWithContext(r.Context, r.Method, r.GetURL(), reqBody)
+			r.Debug("Creating request with context")
+		} else {
+			req, err = http.NewRequest(r.Method, r.GetURL(), reqBody)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -223,7 +245,7 @@ func (r *Request) Send() (*http.Response, error) {
 
 			// Set Authorization header with Bearer prefix
 			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-			fmt.Printf("DEBUG: Setting Authorization header with Bearer prefix: Bearer %s\n", token)
+			r.Debug("Setting Authorization header with Bearer prefix: Bearer %s", token)
 		}
 
 		// Send the request
@@ -232,7 +254,7 @@ func (r *Request) Send() (*http.Response, error) {
 			return nil, fmt.Errorf("failed to send request: %w", err)
 		}
 
-		fmt.Printf("DEBUG: Response status: %d\n", resp.StatusCode)
+		r.Debug("Response status: %d", resp.StatusCode)
 
 		// If unauthorized and not already authenticated, try again with authentication
 		if resp.StatusCode == http.StatusUnauthorized {
@@ -240,12 +262,12 @@ func (r *Request) Send() (*http.Response, error) {
 
 			if authenticated {
 				// We got a 401 despite using a token, so the token is likely invalid
-				fmt.Printf("DEBUG: Got 401 Unauthorized with a token, token may be expired. Deleting cached token.\n")
+				r.Debug("Got 401 Unauthorized with a token, token may be expired. Deleting cached token.")
 				DeleteCachedToken(r.Host)
 			}
 
 			if !authenticated {
-				fmt.Printf("DEBUG: Got 401 Unauthorized, trying again with authentication\n")
+				r.Debug("Got 401 Unauthorized, trying again with authentication")
 				authenticated = true
 				continue
 			} else {

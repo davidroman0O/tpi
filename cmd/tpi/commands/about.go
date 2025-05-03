@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/spf13/cobra"
 )
 
@@ -43,26 +45,60 @@ func newAboutCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			// Print info in a table
-			fmt.Println("\n--- BMC Daemon Information ---")
-			fmt.Println("|-----------------|----------------------------|")
-			fmt.Println("|       Key       |            Value           |")
-			fmt.Println("|-----------------|----------------------------|")
-
-			// Sort keys for consistent output
-			keys := make([]string, 0, len(about))
-			for key := range about {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-
-			for _, key := range keys {
-				fmt.Printf("| %-15s | %-28s |\n", key, about[key])
-			}
-
-			fmt.Println("|-----------------|----------------------------|")
+			// Print info using markdown/glamour for nicer formatting
+			renderAboutInfo(about)
 		},
 	}
 
 	return cmd
+}
+
+// renderAboutInfo renders the about information as nicely formatted output
+func renderAboutInfo(about map[string]string) {
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(about))
+	for key := range about {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	// Build markdown content
+	var md strings.Builder
+	md.WriteString("# BMC Daemon Information\n\n")
+	md.WriteString("| Key | Value |\n")
+	md.WriteString("|-----|-------|\n")
+
+	for _, key := range keys {
+		md.WriteString(fmt.Sprintf("| **%s** | %s |\n", key, about[key]))
+	}
+
+	// Set up the renderer with the dark theme
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80),
+	)
+	if err != nil {
+		// Fallback to plain text if renderer fails
+		fmt.Println("\n--- BMC Daemon Information ---")
+		fmt.Println("|-----------------|----------------------------|")
+		fmt.Println("|       Key       |            Value           |")
+		fmt.Println("|-----------------|----------------------------|")
+
+		for _, key := range keys {
+			fmt.Printf("| %-15s | %-28s |\n", key, about[key])
+		}
+
+		fmt.Println("|-----------------|----------------------------|")
+		return
+	}
+
+	// Render and print the markdown
+	out, err := renderer.Render(md.String())
+	if err != nil {
+		// Fallback to plain text if rendering fails
+		fmt.Println(md.String())
+		return
+	}
+
+	fmt.Println(out)
 }

@@ -19,7 +19,33 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+)
+
+var (
+	// Define styles for power status display
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1)
+
+	nodeStyle = lipgloss.NewStyle().
+			Padding(0, 1)
+
+	powerOnStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("10")). // Green
+			Padding(0, 1)
+
+	powerOffStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")). // Gray
+			Padding(0, 1)
+
+	tableStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1)
 )
 
 // newPowerCommand creates the power command
@@ -74,18 +100,41 @@ func newPowerCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
+			// Get command flags
+			cmdFlag, _ := cmd.Flags().GetString("cmd")
+			nodeFlag, _ := cmd.Flags().GetInt("node")
+
 			// Get the command (args[0]) and node number (args[1], if present)
 			command := args[0]
 			var nodeNum int
 
 			if len(args) > 1 {
 				nodeNum, _ = strconv.Atoi(args[1]) // Already validated in Args
+			} else if nodeFlag > 0 {
+				// Use node from flag if provided
+				nodeNum = nodeFlag
 			} else if command != "status" {
 				// For on/off/reset without a specified node, use all nodes
 				if command == "on" {
 					err = client.PowerOnAll()
+					if err == nil {
+						fmt.Println("✅ All nodes powered on\n")
+
+						// Show current power status
+						fmt.Println("Current power status:")
+						status, _ := client.PowerStatus()
+						printStyledPowerStatus(status, 0)
+					}
 				} else if command == "off" {
 					err = client.PowerOffAll()
+					if err == nil {
+						fmt.Println("✅ All nodes powered off\n")
+
+						// Show current power status
+						fmt.Println("Current power status:")
+						status, _ := client.PowerStatus()
+						printStyledPowerStatus(status, 0)
+					}
 				} else if command == "reset" {
 					fmt.Fprintf(os.Stderr, "Error: reset command requires a node number\n")
 					os.Exit(1)
@@ -102,6 +151,11 @@ func newPowerCommand() *cobra.Command {
 			// Execute the command
 			switch command {
 			case "status":
+				// Check if the --cmd flag was also used
+				if cmdFlag != "" && cmdFlag != "status" {
+					fmt.Printf("⚠️  Warning: Ignoring --cmd=%s flag in favor of 'status' argument\n", cmdFlag)
+				}
+
 				// Get power status
 				status, err := client.PowerStatus()
 				if err != nil {
@@ -109,44 +163,59 @@ func newPowerCommand() *cobra.Command {
 					os.Exit(1)
 				}
 
-				// Print the status
-				fmt.Println("Power Status:")
-				fmt.Println("-----------------")
+				// Print the status with nice styling
+				printStyledPowerStatus(status, nodeNum)
 
-				// If a node was specified, only print that node
-				if nodeNum > 0 {
-					if powerOn, ok := status[nodeNum]; ok {
-						printNodeStatus(nodeNum, powerOn)
-					} else {
-						fmt.Fprintf(os.Stderr, "Error: node %d not found\n", nodeNum)
-						os.Exit(1)
-					}
-				} else {
-					// Print all nodes
-					for i := 1; i <= 4; i++ {
-						if powerOn, ok := status[i]; ok {
-							printNodeStatus(i, powerOn)
-						}
-					}
-				}
 			case "on":
+				// Check if the --cmd flag was also used
+				if cmdFlag != "" && cmdFlag != "on" {
+					fmt.Printf("⚠️  Warning: Ignoring --cmd=%s flag in favor of 'on' argument\n", cmdFlag)
+				}
+
 				if err := client.PowerOn(nodeNum); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Printf("Node %d powered on\n", nodeNum)
+				fmt.Printf("✅ Node %d powered on\n", nodeNum)
+
+				// Show the current power status
+				fmt.Println("\nCurrent power status:")
+				status, _ := client.PowerStatus()
+				printStyledPowerStatus(status, 0)
+
 			case "off":
+				// Check if the --cmd flag was also used
+				if cmdFlag != "" && cmdFlag != "off" {
+					fmt.Printf("⚠️  Warning: Ignoring --cmd=%s flag in favor of 'off' argument\n", cmdFlag)
+				}
+
 				if err := client.PowerOff(nodeNum); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Printf("Node %d powered off\n", nodeNum)
+				fmt.Printf("✅ Node %d powered off\n", nodeNum)
+
+				// Show the current power status
+				fmt.Println("\nCurrent power status:")
+				status, _ := client.PowerStatus()
+				printStyledPowerStatus(status, 0)
+
 			case "reset":
+				// Check if the --cmd flag was also used
+				if cmdFlag != "" && cmdFlag != "reset" {
+					fmt.Printf("⚠️  Warning: Ignoring --cmd=%s flag in favor of 'reset' argument\n", cmdFlag)
+				}
+
 				if err := client.PowerReset(nodeNum); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
-				fmt.Printf("Node %d reset\n", nodeNum)
+				fmt.Printf("✅ Node %d reset\n", nodeNum)
+
+				// Show the current power status
+				fmt.Println("\nCurrent power status:")
+				status, _ := client.PowerStatus()
+				printStyledPowerStatus(status, 0)
 			}
 		},
 	}
@@ -158,7 +227,56 @@ func newPowerCommand() *cobra.Command {
 	return cmd
 }
 
-// printNodeStatus prints the status of a node
+// printStyledPowerStatus prints the status with nice lipgloss styling
+func printStyledPowerStatus(status map[int]bool, specificNode int) {
+	// Header
+	header := headerStyle.Render("NODE") + headerStyle.Render("STATUS")
+
+	// Rows
+	rows := []string{}
+
+	// If a specific node is requested, only show that one
+	if specificNode > 0 {
+		if powerOn, ok := status[specificNode]; ok {
+			rows = append(rows, renderNodeRow(specificNode, powerOn))
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: node %d not found\n", specificNode)
+			os.Exit(1)
+		}
+	} else {
+		// Otherwise show all nodes in order
+		for i := 1; i <= 4; i++ {
+			if powerOn, ok := status[i]; ok {
+				rows = append(rows, renderNodeRow(i, powerOn))
+			}
+		}
+	}
+
+	// Combine rows
+	table := header
+	for _, row := range rows {
+		table += "\n" + row
+	}
+
+	// Print the table with border
+	fmt.Println(tableStyle.Render(table))
+}
+
+// renderNodeRow renders a single row in the power status table
+func renderNodeRow(node int, powerOn bool) string {
+	nodeStr := nodeStyle.Render(fmt.Sprintf("Node %d", node))
+
+	var statusStr string
+	if powerOn {
+		statusStr = powerOnStyle.Render("● ON")
+	} else {
+		statusStr = powerOffStyle.Render("○ OFF")
+	}
+
+	return nodeStr + statusStr
+}
+
+// printNodeStatus prints the status of a node (DEPRECATED - using the styled version now)
 func printNodeStatus(node int, powerOn bool) {
 	status := "OFF"
 	if powerOn {
