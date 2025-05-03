@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davidroman0O/tpi/cmd/tpi/commands"
+	"github.com/davidroman0O/tpi/cli/commands"
 	"github.com/spf13/cobra"
 )
 

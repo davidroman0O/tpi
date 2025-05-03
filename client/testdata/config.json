@@ -1,0 +1,7 @@
+{
+  "__comment": "This file contains real credentials for hardware testing - BE CAREFUL if committing",
+  "host": "192.168.1.91",
+  "username": "root",
+  "password": "turing",
+  "api_version": "v1-1"
+} 
