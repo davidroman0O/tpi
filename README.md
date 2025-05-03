@@ -4,8 +4,8 @@ Work in progress port from the original Rust code
 
 TODO:
 
-[ ] usb
-[ ] firmware
+- usb
+- firmware
 
 ## License
 
