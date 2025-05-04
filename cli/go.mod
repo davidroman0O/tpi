@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/huh v0.7.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/davidroman0O/tpi v0.0.0-20250503164807-4a307331617a
-	github.com/davidroman0O/tpi/client v0.0.0-20250503172800-0161669c8f4c
+	github.com/davidroman0O/tpi/client v0.0.0-20250504022608-e13554f7304b
 	github.com/spf13/cobra v1.9.1
 )
 

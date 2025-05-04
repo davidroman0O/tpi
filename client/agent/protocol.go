@@ -62,6 +62,12 @@ const (
 
 	// Firmware commands
 	CmdUpgradeFirmware CommandType = "upgrade_firmware"
+
+	// File commands
+	CmdUploadFile     CommandType = "upload-file"
+	CmdDownloadFile   CommandType = "download-file"
+	CmdListDirectory  CommandType = "list-directory"
+	CmdExecuteCommand CommandType = "execute-command"
 )
 
 // Command represents a command sent from a client to the agent
@@ -110,4 +116,13 @@ type FlashOptions struct {
 	ImagePath string `json:"image_path"`
 	SHA256    string `json:"sha256,omitempty"`
 	SkipCRC   bool   `json:"skip_crc,omitempty"`
+}
+
+// FileInfo represents information about a file on the remote system
+type FileInfo struct {
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	Mode    uint32    `json:"mode"`
+	ModTime time.Time `json:"mod_time"`
+	IsDir   bool      `json:"is_dir"`
 }
