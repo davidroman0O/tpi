@@ -48,6 +48,7 @@ modules simultaneously. For more information, visit https://turingpi.com/`,
 	rootCmd.AddCommand(newUartCommand())
 	rootCmd.AddCommand(newAdvancedCommand())
 	rootCmd.AddCommand(newAuthCommand())
+	rootCmd.AddCommand(newAgentCommand())
 
 	return rootCmd
 }
